@@ -645,25 +645,36 @@ def get_all_users():
     ).execute().get("values", [])
 
     users = []
+
     for r in rows:
-        if len(r) < 14:
+        # ❗ защита от пустых и кривых строк
+        if not r or not r[0]:
+            continue
+
+        try:
+            user_id = int(r[0])
+            age = int(r[4])
+            age_min = int(r[10])
+            age_max = int(r[11])
+        except Exception:
             continue
 
         users.append({
-            "user_id": int(r[0]),
+            "user_id": user_id,
             "username": r[2],
             "name": r[3],
-            "age": int(r[4]),
+            "age": age,
             "city": r[5],
             "gender": r[6],
             "about": r[7],
-            "onboarding_completed": r[8] == "TRUE",
+            "onboarding_completed": str(r[8]).upper() == "TRUE",
             "looking_for_gender": r[9],
-            "looking_for_age_min": int(r[10]),
-            "looking_for_age_max": int(r[11]),
+            "looking_for_age_min": age_min,
+            "looking_for_age_max": age_max,
             "photo_main": r[12],
             "interests": [i.strip() for i in r[13].split(",") if i.strip()],
         })
+
     return users
 
 def find_recommendation(current_user_id: int, profile: dict):
