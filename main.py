@@ -62,6 +62,10 @@ STATE_ONBOARDING_CITY = "ONBOARDING_CITY"
 STATE_ONBOARDING_ABOUT = "ONBOARDING_ABOUT"
 STATE_ONBOARDING_PHOTO_MAIN = "ONBOARDING_PHOTO_MAIN"
 STATE_ONBOARDING_PHOTO_EXTRA = "ONBOARDING_PHOTO_EXTRA"
+STATE_ONBOARDING_GENDER = "ONBOARDING_GENDER"
+STATE_ONBOARDING_LOOKING_GENDER = "ONBOARDING_LOOKING_GENDER"
+STATE_ONBOARDING_INTERESTS = "ONBOARDING_INTERESTS"
+STATE_ONBOARDING_LOOKING_AGE = "STATE_ONBOARDING_LOOKING_AGE"
 
 STATE_DIALOGS = "DIALOGS"
 STATE_RECOMMENDATION = "RECOMMENDATION"
@@ -286,6 +290,15 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_screen(update, context, text, kb)
         return
 
+    if data.startswith("gender:"):
+        profile = context.user_data["profile"]
+        profile["gender"] = data.split(":")[1]
+        context.user_data["profile"] = profile
+
+        set_state(context, STATE_ONBOARDING_ABOUT)
+        await show_screen(update, context, "Пару слов о себе", InlineKeyboardMarkup([]))
+        return
+
     if data == "profile:view":
         text = "Профиль"
         kb = InlineKeyboardMarkup([
@@ -295,13 +308,48 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     if data == "onboarding:finish":
-        set_state(context, STATE_DIALOGS)
+        set_state(context, STATE_ONBOARDING_LOOKING_GENDER)
 
-        # ВАЖНО: тут позже будет запись в users sheet
-        log.info("ONBOARDING DONE | profile=%s", context.user_data.get("profile"))
+        kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("Мужчин", callback_data="looking:male"),
+                InlineKeyboardButton("Женщин", callback_data="looking:female"),
+            ],
+            [InlineKeyboardButton("Всех", callback_data="looking:any")]
+        ])
 
-        text, kb = render_dialogs(uid)
-        await show_screen(update, context, text, kb)
+        await show_screen(update, context, "Кого ты ищешь?", kb)
+        return
+    
+    if data.startswith("looking:"):
+        profile = context.user_data["profile"]
+        profile["looking_for_gender"] = data.split(":")[1]
+        context.user_data["profile"] = profile
+
+        set_state(context, STATE_ONBOARDING_LOOKING_AGE)
+        await show_screen(update, context, "Возрастной диапазон", InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("18–25", callback_data="age:18:25"),
+                InlineKeyboardButton("25–35", callback_data="age:25:35"),
+            ],
+            [
+                InlineKeyboardButton("35–45", callback_data="age:35:45"),
+                InlineKeyboardButton("45+", callback_data="age:45:99"),
+            ],
+        ]))
+        return
+    
+    if data.startswith("age:"):
+        _, a_min, a_max = data.split(":")
+        profile = context.user_data["profile"]
+        profile["looking_for_age_min"] = int(a_min)
+        profile["looking_for_age_max"] = int(a_max)
+        context.user_data["profile"] = profile
+
+        set_state(context, STATE_ONBOARDING_INTERESTS)
+        await show_screen(update, context, "Интересы (через запятую)", InlineKeyboardMarkup([]))
+        return
+
     return
     
 # =========================
@@ -333,9 +381,22 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if state == STATE_ONBOARDING_CITY:
         profile["city"] = text
-        set_state(context, STATE_ONBOARDING_ABOUT)
+        set_state(context, STATE_ONBOARDING_GENDER)
         context.user_data["profile"] = profile
-        await show_screen(update, context, "Пару слов о себе", InlineKeyboardMarkup([]))
+
+        kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("Мужчина", callback_data="gender:male"),
+                InlineKeyboardButton("Женщина", callback_data="gender:female"),
+            ],
+            [InlineKeyboardButton("Не указывать", callback_data="gender:other")]
+        ])
+
+        await show_screen(update, context, "Укажи свой пол", kb)
+        return
+
+    if state == STATE_ONBOARDING_GENDER:
+        await update.message.reply_text("Выбери вариант кнопкой")
         return
 
     if state == STATE_ONBOARDING_ABOUT:
@@ -347,6 +408,23 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context,
             "Загрузи главное фото\n(без него нельзя продолжить)",
             InlineKeyboardMarkup([])
+        )
+        return
+    
+    if state == STATE_ONBOARDING_INTERESTS:
+        profile["interests"] = [i.strip() for i in text.split(",") if i.strip()]
+        profile["onboarding_completed"] = True
+        context.user_data["profile"] = profile
+
+        set_state(context, STATE_DIALOGS)
+
+        await show_screen(
+            update,
+            context,
+            "Профиль готов.\nПереходим к диалогам.",
+            InlineKeyboardMarkup([
+                [InlineKeyboardButton("Продолжить", callback_data="go:dialogs")]
+            ])
         )
         return
 
