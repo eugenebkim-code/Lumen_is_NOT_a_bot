@@ -69,7 +69,6 @@ STATE_ONBOARDING_LOOKING_AGE_MIN = "STATE_ONBOARDING_LOOKING_AGE_MIN"
 STATE_ONBOARDING_LOOKING_AGE_MAX = "STATE_ONBOARDING_LOOKING_AGE_MAX"
 
 STATE_DIALOGS = "DIALOGS"
-STATE_RECOMMENDATION = "RECOMMENDATION"
 STATE_EMPTY = "EMPTY"
 
 INTERESTS = [
@@ -279,12 +278,51 @@ async def show_screen(
     )
     set_main_message_id(context, sent.message_id)
 
+def load_user_profile(user_id: int) -> dict | None:
+    rows = sheets.spreadsheets().values().get(
+        spreadsheetId=SPREADSHEET_ID,
+        range="users!A2:N",
+    ).execute().get("values", [])
+
+    for r in rows:
+        if not r:
+            continue
+
+        try:
+            uid = int(r[0])
+        except Exception:
+            continue
+
+        if uid != user_id:
+            continue
+
+        return {
+            "user_id": uid,
+            "created_at": r[1],
+            "username": r[2],
+            "name": r[3],
+            "age": int(r[4]),
+            "city": r[5],
+            "gender": r[6],
+            "about": r[7],
+            "onboarding_completed": str(r[8]).upper() == "TRUE",
+            "looking_for_gender": r[9],
+            "looking_for_age_min": int(r[10]),
+            "looking_for_age_max": int(r[11]),
+            "photo_main": r[12],
+            "interests": [i.strip() for i in r[13].split(",") if i.strip()],
+            "photos": [r[12]] if r[12] else [],
+        }
+
+    return None
 
 # =========================
 # HANDLERS
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log.info("START | user=%s", update.effective_user.id)
+
+    # сохраняем main_message_id при рестарте
     main_msg_id = context.user_data.get("main_message_id")
     context.user_data.clear()
     if main_msg_id:
@@ -292,20 +330,36 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     uid = update.effective_user.id
 
-    if not user_exists(uid):
+    # === 1. ПЫТАЕМСЯ ЗАГРУЗИТЬ ПРОФИЛЬ ===
+    profile = load_user_profile(uid)
+
+    # === 2. ЕСЛИ ПРОФИЛЯ НЕТ → ОНБОРДИНГ ===
+    if not profile:
         set_state(context, STATE_ONBOARDING_NAME)
         context.user_data["profile"] = {
             "photos": []
         }
-        text = "Как тебя зовут?"
-        kb = InlineKeyboardMarkup([
-            
-        ])
+
+        await show_screen(
+            update,
+            context,
+            "Как тебя зовут?",
+            InlineKeyboardMarkup([])
+        )
+        return
+
+    # === 3. ПРОФИЛЬ ЕСТЬ ===
+    context.user_data["profile"] = profile
+
+    rec = find_recommendation(uid, profile)
+
+    if not rec:
+        text, kb = render_empty()
         await show_screen(update, context, text, kb)
         return
 
-    set_state(context, STATE_DIALOGS)
-    text, kb = render_dialogs(uid)
+    set_state(context, STATE_RECOMMENDATION)
+    text, kb = render_recommendation_card(rec)
     await show_screen(update, context, text, kb)
 
 # =========================
@@ -438,12 +492,6 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     if data == "go:recommendations":
-        set_state(context, STATE_RECOMMENDATION)
-        text, kb = render_recommendation(uid)
-        await show_screen(update, context, text, kb)
-        return
-    
-    if data == "go:recommendations":
         profile = context.user_data["profile"]
         rec = find_recommendation(uid, profile)
 
@@ -454,6 +502,37 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         set_state(context, STATE_RECOMMENDATION)
         text, kb = render_recommendation_card(rec)
+        await show_screen(update, context, text, kb)
+        return
+    
+    # =========================
+    # RECOMMENDATIONS ACTIONS
+    # =========================
+    if data == "rec:skip":
+        profile = context.user_data.get("profile") or load_user_profile(uid)
+        context.user_data["profile"] = profile
+
+        rec = find_recommendation(uid, profile)
+
+        if not rec:
+            text, kb = render_empty()
+            await show_screen(update, context, text, kb)
+            return
+
+        set_state(context, STATE_RECOMMENDATION)
+        text, kb = render_recommendation_card(rec)
+        await show_screen(update, context, text, kb)
+        return
+
+    if data.startswith("rec:start:"):
+        other_user_id = int(data.split(":")[2])
+
+        # пока заглушка - позже тут будет запись в dialogs sheet
+        text = f"Ок. Диалог с пользователем {other_user_id} создан (пока заглушка)."
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("К диалогам", callback_data="go:dialogs")],
+            [InlineKeyboardButton("Дальше рекомендации", callback_data="rec:skip")]
+        ])
         await show_screen(update, context, text, kb)
         return
     
@@ -608,23 +687,6 @@ def find_recommendation(current_user_id: int, profile: dict):
         return u  # первый подходящий
 
     return None
-
-def render_recommendation_card(user: dict):
-    text = (
-        f"{user['name']}, {user['age']}\n"
-        f"{user['city']}\n\n"
-        f"{user['about']}"
-    )
-
-    kb = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("💬 Начать диалог", callback_data=f"rec:start:{user['user_id']}"),
-            InlineKeyboardButton("➡️ Пропустить", callback_data="rec:skip"),
-        ]
-    ])
-
-    return text, kb
-
 
 # =========================
 # PHOTO
