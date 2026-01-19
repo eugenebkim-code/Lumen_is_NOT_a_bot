@@ -443,6 +443,20 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_screen(update, context, text, kb)
         return
     
+    if data == "go:recommendations":
+        profile = context.user_data["profile"]
+        rec = find_recommendation(uid, profile)
+
+        if not rec:
+            text, kb = render_empty()
+            await show_screen(update, context, text, kb)
+            return
+
+        set_state(context, STATE_RECOMMENDATION)
+        text, kb = render_recommendation_card(rec)
+        await show_screen(update, context, text, kb)
+        return
+    
         
 # =========================
 # ONBOARDING
@@ -540,8 +554,78 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardMarkup([])
         )
         return
-    
-    
+
+# =========================
+# RECOMMENDATIONS
+# =========================
+
+def get_all_users():
+    rows = sheets.spreadsheets().values().get(
+        spreadsheetId=SPREADSHEET_ID,
+        range="users!A2:N",
+    ).execute().get("values", [])
+
+    users = []
+    for r in rows:
+        if len(r) < 14:
+            continue
+
+        users.append({
+            "user_id": int(r[0]),
+            "username": r[2],
+            "name": r[3],
+            "age": int(r[4]),
+            "city": r[5],
+            "gender": r[6],
+            "about": r[7],
+            "onboarding_completed": r[8] == "TRUE",
+            "looking_for_gender": r[9],
+            "looking_for_age_min": int(r[10]),
+            "looking_for_age_max": int(r[11]),
+            "photo_main": r[12],
+            "interests": [i.strip() for i in r[13].split(",") if i.strip()],
+        })
+    return users
+
+def find_recommendation(current_user_id: int, profile: dict):
+    users = get_all_users()
+
+    for u in users:
+        if not u["onboarding_completed"]:
+            continue
+        if u["user_id"] == current_user_id:
+            continue
+
+        # возраст
+        if not (profile["looking_for_age_min"] <= u["age"] <= profile["looking_for_age_max"]):
+            continue
+
+        # пол
+        lf = profile["looking_for_gender"]
+        if lf != "any" and u["gender"] != lf:
+            continue
+
+        return u  # первый подходящий
+
+    return None
+
+def render_recommendation_card(user: dict):
+    text = (
+        f"{user['name']}, {user['age']}\n"
+        f"{user['city']}\n\n"
+        f"{user['about']}"
+    )
+
+    kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("💬 Начать диалог", callback_data=f"rec:start:{user['user_id']}"),
+            InlineKeyboardButton("➡️ Пропустить", callback_data="rec:skip"),
+        ]
+    ])
+
+    return text, kb
+
+
 # =========================
 # PHOTO
 # =========================
