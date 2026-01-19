@@ -396,15 +396,14 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         profile["interests"] = list(interests)
         context.user_data["profile"] = profile
 
-        await show_screen(
-            update,
-            context,
-            "Выбери интересы (до 6)",
-            render_interests_keyboard(context)
+        await q.edit_message_reply_markup(
+            reply_markup=render_interests_keyboard(context)
         )
         return
 
     if data == "interests:done":
+        profile = context.user_data["profile"]
+
         profile["onboarding_completed"] = True
         context.user_data["profile"] = profile
 
@@ -415,12 +414,14 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_screen(
             update,
             context,
-            "Профиль готов.\nПереходим к диалогам.",
+            "Профиль готов ✅\n\n"
+            "Ты можешь посмотреть рекомендации на сегодня\n"
+            "или вернуться к диалогам.",
             InlineKeyboardMarkup([
-                [InlineKeyboardButton("Продолжить", callback_data="go:dialogs")]
+                [InlineKeyboardButton("🔍 Рекомендации", callback_data="go:recommendations")],
+                [InlineKeyboardButton("💬 Диалоги", callback_data="go:dialogs")]
             ])
         )
-        return
 
     if data == "onboarding:finish":
         set_state(context, STATE_ONBOARDING_LOOKING_GENDER)
@@ -434,6 +435,12 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
 
         await show_screen(update, context, "Кого ты ищешь?", kb)
+        return
+    
+    if data == "go:recommendations":
+        set_state(context, STATE_RECOMMENDATION)
+        text, kb = render_recommendation(uid)
+        await show_screen(update, context, text, kb)
         return
     
         
@@ -534,23 +541,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    if state == STATE_ONBOARDING_INTERESTS:
-        profile["interests"] = [i.strip() for i in text.split(",") if i.strip()]
-        profile["onboarding_completed"] = True
-        context.user_data["profile"] = profile
-
-        set_state(context, STATE_DIALOGS)
-
-        await show_screen(
-            update,
-            context,
-            "Профиль готов.\nПереходим к диалогам.",
-            InlineKeyboardMarkup([
-                [InlineKeyboardButton("Продолжить", callback_data="go:dialogs")]
-            ])
-        )
-        return
-
+    
 # =========================
 # PHOTO
 # =========================
