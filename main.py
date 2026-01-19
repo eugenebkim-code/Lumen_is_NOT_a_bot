@@ -13,6 +13,12 @@ from telegram.ext import (
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
+# =========================
+# LOGGING
+# =========================
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger(__name__)
+
 
 # =========================
 # CONFIG
