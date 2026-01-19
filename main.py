@@ -246,6 +246,12 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = q.from_user.id
     data = q.data
     state = get_state(context)
+    
+    if data == "onboarding:start":
+        set_state(context, STATE_DIALOGS)
+        text, kb = render_dialogs(uid)
+        await show_screen(update, context, text, kb)
+        return
 
     if data == "go:dialogs":
         set_state(context, STATE_DIALOGS)
@@ -274,6 +280,8 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
         await show_screen(update, context, text, kb)
         return
+    
+    
 
 
 # =========================
