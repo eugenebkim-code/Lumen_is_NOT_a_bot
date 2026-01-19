@@ -24,6 +24,12 @@ import json
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE")
 
 if not BOT_TOKEN or not SPREADSHEET_ID or not GOOGLE_SERVICE_ACCOUNT_JSON:
+    log.error(
+        "ENV CHECK | BOT_TOKEN=%s | SPREADSHEET_ID=%s | GOOGLE_JSON=%s",
+        bool(BOT_TOKEN),
+        bool(SPREADSHEET_ID),
+        bool(GOOGLE_SERVICE_ACCOUNT_JSON),
+    )
     raise RuntimeError("ENV vars missing")
 
 service_account_info = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
