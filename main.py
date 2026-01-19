@@ -40,20 +40,10 @@ creds = service_account.Credentials.from_service_account_info(
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
-
 # =========================
 # GOOGLE SHEETS
 # =========================
-creds = service_account.Credentials.from_service_account_file(
-    GOOGLE_SERVICE_ACCOUNT_FILE,
-    scopes=["https://www.googleapis.com/auth/spreadsheets"],
-)
 sheets = build("sheets", "v4", credentials=creds)
-
-
-def now():
-    return datetime.now(timezone.utc).isoformat()
-
 
 # =========================
 # STATES
@@ -257,15 +247,6 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         # Пока только экран-заглушка диалога
-        text = "Диалог"
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Назад", callback_data="go:dialogs")]
-        ])
-        await show_screen(update, context, text, kb)
-        return
-
-    if data.startswith("dialog:"):
-        # Заглушка просмотра диалога
         text = "Диалог"
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("Назад", callback_data="go:dialogs")]
