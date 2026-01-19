@@ -25,32 +25,28 @@ log = logging.getLogger(__name__)
 # =========================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
+import base64
 import json
 
-GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE")
+GOOGLE_SERVICE_ACCOUNT_B64 = os.getenv("GOOGLE_SERVICE_ACCOUNT_B64")
 
-if not BOT_TOKEN or not SPREADSHEET_ID or not GOOGLE_SERVICE_ACCOUNT_JSON:
+if not BOT_TOKEN or not SPREADSHEET_ID or not GOOGLE_SERVICE_ACCOUNT_B64:
     log.error(
-        "ENV CHECK | BOT_TOKEN=%s | SPREADSHEET_ID=%s | GOOGLE_JSON=%s",
+        "ENV CHECK | BOT_TOKEN=%s | SPREADSHEET_ID=%s | GOOGLE_B64=%s",
         bool(BOT_TOKEN),
         bool(SPREADSHEET_ID),
-        bool(GOOGLE_SERVICE_ACCOUNT_JSON),
+        bool(GOOGLE_SERVICE_ACCOUNT_B64),
     )
     raise RuntimeError("ENV vars missing")
 
-service_account_info = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
+service_account_json = base64.b64decode(GOOGLE_SERVICE_ACCOUNT_B64).decode("utf-8")
+service_account_info = json.loads(service_account_json)
 
 creds = service_account.Credentials.from_service_account_info(
     service_account_info,
     scopes=["https://www.googleapis.com/auth/spreadsheets"],
 )
 
-
-# =========================
-# LOGGING
-# =========================
-logging.basicConfig(level=logging.INFO)
-log = logging.getLogger(__name__)
 
 # =========================
 # GOOGLE SHEETS
