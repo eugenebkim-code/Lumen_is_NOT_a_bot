@@ -215,6 +215,27 @@ def render_recommendation(user_id: int):
 
     return text, kb
 
+def render_recommendation_card(user: dict):
+    text = (
+        f"{user['name']}, {user['age']}\n"
+        f"{user['city']}\n\n"
+        f"{user['about']}"
+    )
+
+    kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "💬 Начать диалог",
+                callback_data=f"rec:start:{user['user_id']}"
+            ),
+            InlineKeyboardButton(
+                "➡️ Пропустить",
+                callback_data="rec:skip"
+            ),
+        ]
+    ])
+
+    return text, kb
 
 def render_empty():
     text = "На сегодня предложений больше нет"
