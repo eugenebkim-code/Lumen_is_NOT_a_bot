@@ -187,13 +187,14 @@ def render_empty():
 # SCREEN ROUTER
 # =========================
 async def show_screen(
+        
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     text: str,
     keyboard: InlineKeyboardMarkup,
 ):
     msg_id = get_main_message_id(context)
-
+    log.info("SEND NEW MAIN MESSAGE")
     if msg_id:
         try:
             await update.effective_chat.edit_message_text(
@@ -203,7 +204,7 @@ async def show_screen(
             )
             return
         except Exception:
-            pass
+            context.user_data.pop("main_message_id", None)
 
     sent = await update.effective_chat.send_message(
         text=text,
@@ -216,7 +217,11 @@ async def show_screen(
 # HANDLERS
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    log.info("START | user=%s", update.effective_user.id)
+    main_msg_id = context.user_data.get("main_message_id")
     context.user_data.clear()
+    if main_msg_id:
+        context.user_data["main_message_id"] = main_msg_id
 
     uid = update.effective_user.id
 
