@@ -56,7 +56,13 @@ sheets = build("sheets", "v4", credentials=creds)
 # =========================
 # STATES
 # =========================
-STATE_ONBOARDING = "ONBOARDING"
+STATE_ONBOARDING_NAME = "ONBOARDING_NAME"
+STATE_ONBOARDING_AGE = "ONBOARDING_AGE"
+STATE_ONBOARDING_CITY = "ONBOARDING_CITY"
+STATE_ONBOARDING_ABOUT = "ONBOARDING_ABOUT"
+STATE_ONBOARDING_PHOTO_MAIN = "ONBOARDING_PHOTO_MAIN"
+STATE_ONBOARDING_PHOTO_EXTRA = "ONBOARDING_PHOTO_EXTRA"
+
 STATE_DIALOGS = "DIALOGS"
 STATE_RECOMMENDATION = "RECOMMENDATION"
 STATE_EMPTY = "EMPTY"
@@ -66,7 +72,7 @@ STATE_EMPTY = "EMPTY"
 # USER STATE (TEMP)
 # =========================
 def get_state(context: ContextTypes.DEFAULT_TYPE) -> str:
-    return context.user_data.get("state", STATE_ONBOARDING)
+    return context.user_data.get("state", STATE_ONBOARDING_NAME)
 
 
 def set_state(context: ContextTypes.DEFAULT_TYPE, state: str):
@@ -226,10 +232,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
 
     if not user_exists(uid):
-        set_state(context, STATE_ONBOARDING)
-        text = "Онбординг"
+        set_state(context, STATE_ONBOARDING_NAME)
+        context.user_data["profile"] = {
+            "photos": []
+        }
+        text = "Как тебя зовут?"
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Начать", callback_data="onboarding:start")]
+            
         ])
         await show_screen(update, context, text, kb)
         return
@@ -237,6 +246,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     set_state(context, STATE_DIALOGS)
     text, kb = render_dialogs(uid)
     await show_screen(update, context, text, kb)
+
+# =========================
+# CALLBACK
+# =========================
 
 
 async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -281,8 +294,103 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_screen(update, context, text, kb)
         return
     
-    
+    if data == "onboarding:finish":
+        set_state(context, STATE_DIALOGS)
 
+        # ВАЖНО: тут позже будет запись в users sheet
+        log.info("ONBOARDING DONE | profile=%s", context.user_data.get("profile"))
+
+        text, kb = render_dialogs(uid)
+        await show_screen(update, context, text, kb)
+    return
+    
+# =========================
+# ONBOARDING
+# =========================
+
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    state = get_state(context)
+    text = update.message.text.strip()
+
+    profile = context.user_data.get("profile", {})
+
+    if state == STATE_ONBOARDING_NAME:
+        profile["name"] = text
+        set_state(context, STATE_ONBOARDING_AGE)
+        context.user_data["profile"] = profile
+        await show_screen(update, context, "Сколько тебе лет?", InlineKeyboardMarkup([]))
+        return
+
+    if state == STATE_ONBOARDING_AGE:
+        if not text.isdigit() or not (18 <= int(text) <= 99):
+            await update.message.reply_text("Возраст числом, от 18 до 99")
+            return
+        profile["age"] = int(text)
+        set_state(context, STATE_ONBOARDING_CITY)
+        context.user_data["profile"] = profile
+        await show_screen(update, context, "Из какого ты города?", InlineKeyboardMarkup([]))
+        return
+
+    if state == STATE_ONBOARDING_CITY:
+        profile["city"] = text
+        set_state(context, STATE_ONBOARDING_ABOUT)
+        context.user_data["profile"] = profile
+        await show_screen(update, context, "Пару слов о себе", InlineKeyboardMarkup([]))
+        return
+
+    if state == STATE_ONBOARDING_ABOUT:
+        profile["about"] = text
+        set_state(context, STATE_ONBOARDING_PHOTO_MAIN)
+        context.user_data["profile"] = profile
+        await show_screen(
+            update,
+            context,
+            "Загрузи главное фото\n(без него нельзя продолжить)",
+            InlineKeyboardMarkup([])
+        )
+        return
+
+# =========================
+# PHOTO
+# =========================
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    state = get_state(context)
+    profile = context.user_data.get("profile", {})
+
+    photos = profile.get("photos", [])
+
+    if state == STATE_ONBOARDING_PHOTO_MAIN:
+        file_id = update.message.photo[-1].file_id
+        profile["photo_main"] = file_id
+        photos.append(file_id)
+        profile["photos"] = photos
+
+        set_state(context, STATE_ONBOARDING_PHOTO_EXTRA)
+        context.user_data["profile"] = profile
+
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Готово", callback_data="onboarding:finish")]
+        ])
+
+        await show_screen(
+            update,
+            context,
+            "Можно добавить еще до 2 фото\nили нажми «Готово»",
+            kb
+        )
+        return
+
+    if state == STATE_ONBOARDING_PHOTO_EXTRA:
+        if len(photos) >= 3:
+            await update.message.reply_text("Можно максимум 3 фото")
+            return
+
+        file_id = update.message.photo[-1].file_id
+        photos.append(file_id)
+        profile["photos"] = photos
+        context.user_data["profile"] = profile
+        return
 
 # =========================
 # MAIN
@@ -290,8 +398,12 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
+    from telegram.ext import MessageHandler, filters
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(callback))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
     log.info("LUMEN CORE STARTED")
     app.run_polling()
