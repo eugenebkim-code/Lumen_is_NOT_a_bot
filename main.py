@@ -65,11 +65,18 @@ STATE_ONBOARDING_PHOTO_EXTRA = "ONBOARDING_PHOTO_EXTRA"
 STATE_ONBOARDING_GENDER = "ONBOARDING_GENDER"
 STATE_ONBOARDING_LOOKING_GENDER = "ONBOARDING_LOOKING_GENDER"
 STATE_ONBOARDING_INTERESTS = "ONBOARDING_INTERESTS"
-STATE_ONBOARDING_LOOKING_AGE = "STATE_ONBOARDING_LOOKING_AGE"
+STATE_ONBOARDING_LOOKING_AGE_MIN = "STATE_ONBOARDING_LOOKING_AGE_MIN"
+STATE_ONBOARDING_LOOKING_AGE_MAX = "STATE_ONBOARDING_LOOKING_AGE_MAX"
 
 STATE_DIALOGS = "DIALOGS"
 STATE_RECOMMENDATION = "RECOMMENDATION"
 STATE_EMPTY = "EMPTY"
+
+INTERESTS = [
+    "Путешествия", "Музыка", "Кино", "Спорт",
+    "Игры", "Книги", "IT", "Бизнес",
+    "Еда", "Искусство", "Саморазвитие", "Прогулки",
+]
 
 
 # =========================
@@ -91,9 +98,6 @@ def set_main_message_id(context: ContextTypes.DEFAULT_TYPE, message_id: int):
     context.user_data["main_message_id"] = message_id
 
 
-# =========================
-# DATA ACCESS (MINIMAL)
-# =========================
 # =========================
 # DATA ACCESS
 # =========================
@@ -126,6 +130,33 @@ def get_user_dialogs(user_id: int):
             continue
 
     return dialogs
+
+def save_user(profile: dict, user: Update.effective_user):
+    now = datetime.now(timezone.utc).isoformat()
+
+    row = [
+        user.id,
+        now,
+        user.username or "",
+        profile.get("name", ""),
+        profile.get("age", ""),
+        profile.get("city", ""),
+        profile.get("gender", ""),
+        profile.get("about", ""),
+        True,
+        profile.get("looking_for_gender", ""),
+        profile.get("looking_for_age_min", ""),
+        profile.get("looking_for_age_max", ""),
+        profile.get("photo_main", ""),
+        ", ".join(profile.get("interests", [])),
+    ]
+
+    sheets.spreadsheets().values().append(
+        spreadsheetId=SPREADSHEET_ID,
+        range="users!A2",
+        valueInputOption="RAW",
+        body={"values": [row]},
+    ).execute()
 
 
 # =========================
@@ -192,6 +223,32 @@ def render_empty():
     ])
     return text, kb
 
+def render_interests_keyboard(context: ContextTypes.DEFAULT_TYPE):
+    selected = set(context.user_data.get("profile", {}).get("interests", []))
+
+    buttons = []
+    row = []
+
+    for interest in INTERESTS:
+        prefix = "✅ " if interest in selected else ""
+        row.append(
+            InlineKeyboardButton(
+                prefix + interest,
+                callback_data=f"interest:{interest}"
+            )
+        )
+        if len(row) == 2:
+            buttons.append(row)
+            row = []
+
+    if row:
+        buttons.append(row)
+
+    buttons.append([
+        InlineKeyboardButton("Готово", callback_data="interests:done")
+    ])
+
+    return InlineKeyboardMarkup(buttons)
 
 # =========================
 # SCREEN ROUTER
@@ -264,6 +321,8 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = q.data
     state = get_state(context)
     
+
+
     if data == "onboarding:start":
         set_state(context, STATE_DIALOGS)
         text, kb = render_dialogs(uid)
@@ -307,6 +366,62 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_screen(update, context, text, kb)
         return
     
+    if data.startswith("looking:"):
+        profile = context.user_data["profile"]
+        profile["looking_for_gender"] = data.split(":")[1]
+        context.user_data["profile"] = profile
+
+        set_state(context, STATE_ONBOARDING_LOOKING_AGE_MIN)
+        await show_screen(
+            update,
+            context,
+            "Минимальный возраст (числом)",
+            InlineKeyboardMarkup([])
+        )
+        return
+
+    if data.startswith("interest:"):
+        interest = data.split(":", 1)[1]
+        profile = context.user_data["profile"]
+        interests = set(profile.get("interests", []))
+
+        if interest in interests:
+            interests.remove(interest)
+        else:
+            if len(interests) >= 6:
+                await q.answer("Можно выбрать максимум 6", show_alert=True)
+                return
+            interests.add(interest)
+
+        profile["interests"] = list(interests)
+        context.user_data["profile"] = profile
+
+        await show_screen(
+            update,
+            context,
+            "Выбери интересы (до 6)",
+            render_interests_keyboard(context)
+        )
+        return
+
+    if data == "interests:done":
+        profile["onboarding_completed"] = True
+        context.user_data["profile"] = profile
+
+        save_user(profile, q.from_user)
+
+        set_state(context, STATE_DIALOGS)
+
+        await show_screen(
+            update,
+            context,
+            "Профиль готов.\nПереходим к диалогам.",
+            InlineKeyboardMarkup([
+                [InlineKeyboardButton("Продолжить", callback_data="go:dialogs")]
+            ])
+        )
+        return
+
     if data == "onboarding:finish":
         set_state(context, STATE_ONBOARDING_LOOKING_GENDER)
 
@@ -321,37 +436,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_screen(update, context, "Кого ты ищешь?", kb)
         return
     
-    if data.startswith("looking:"):
-        profile = context.user_data["profile"]
-        profile["looking_for_gender"] = data.split(":")[1]
-        context.user_data["profile"] = profile
-
-        set_state(context, STATE_ONBOARDING_LOOKING_AGE)
-        await show_screen(update, context, "Возрастной диапазон", InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("18–25", callback_data="age:18:25"),
-                InlineKeyboardButton("25–35", callback_data="age:25:35"),
-            ],
-            [
-                InlineKeyboardButton("35–45", callback_data="age:35:45"),
-                InlineKeyboardButton("45+", callback_data="age:45:99"),
-            ],
-        ]))
-        return
-    
-    if data.startswith("age:"):
-        _, a_min, a_max = data.split(":")
-        profile = context.user_data["profile"]
-        profile["looking_for_age_min"] = int(a_min)
-        profile["looking_for_age_max"] = int(a_max)
-        context.user_data["profile"] = profile
-
-        set_state(context, STATE_ONBOARDING_INTERESTS)
-        await show_screen(update, context, "Интересы (через запятую)", InlineKeyboardMarkup([]))
-        return
-
-    return
-    
+        
 # =========================
 # ONBOARDING
 # =========================
@@ -361,6 +446,44 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
 
     profile = context.user_data.get("profile", {})
+
+    if state == STATE_ONBOARDING_LOOKING_AGE_MIN:
+        if not text.isdigit() or not (18 <= int(text) <= 99):
+            await update.message.reply_text("Возраст числом, от 18 до 99")
+            return
+
+        profile["looking_for_age_min"] = int(text)
+        context.user_data["profile"] = profile
+
+        set_state(context, STATE_ONBOARDING_LOOKING_AGE_MAX)
+        await show_screen(
+            update,
+            context,
+            "Максимальный возраст (числом)",
+            InlineKeyboardMarkup([])
+        )
+        return
+
+    if state == STATE_ONBOARDING_LOOKING_AGE_MAX:
+        if not text.isdigit() or not (18 <= int(text) <= 99):
+            await update.message.reply_text("Возраст числом, от 18 до 99")
+            return
+
+        if int(text) < profile.get("looking_for_age_min", 18):
+            await update.message.reply_text("Максимальный возраст не может быть меньше минимального")
+            return
+
+        profile["looking_for_age_max"] = int(text)
+        context.user_data["profile"] = profile
+
+        set_state(context, STATE_ONBOARDING_INTERESTS)
+        await show_screen(
+            update,
+            context,
+            "Выбери интересы (до 6)",
+            render_interests_keyboard(context)
+        )
+        return
 
     if state == STATE_ONBOARDING_NAME:
         profile["name"] = text
