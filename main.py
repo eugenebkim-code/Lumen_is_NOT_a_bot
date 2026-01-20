@@ -257,12 +257,6 @@ def get_main_message_id(context: ContextTypes.DEFAULT_TYPE):
 def set_main_message_id(context: ContextTypes.DEFAULT_TYPE, message_id: int):
     context.user_data["main_message_id"] = message_id
 
-set_presence(
-    user_id=update.effective_user.id,
-    state=get_state(context),
-    current_dialog_id=context.user_data.get("current_dialog_id", ""),
-    main_message_id=sent.message_id
-)
 
 # =========================
 # DATA ACCESS
@@ -482,7 +476,7 @@ async def show_recommendation(update, context, user: dict):
         state=get_state(context),
         current_dialog_id=context.user_data.get("current_dialog_id", ""),
         main_message_id=sent.message_id
-)
+    )
 
 async def show_screen(
     update: Update,
@@ -502,6 +496,14 @@ async def show_screen(
         reply_markup=keyboard,
     )
     set_main_message_id(context, sent.message_id)
+
+    # presence: фиксируем, где юзер сейчас
+    set_presence(
+        user_id=update.effective_user.id,
+        state=get_state(context),
+        current_dialog_id=context.user_data.get("current_dialog_id", ""),
+        main_message_id=sent.message_id,
+    )
 
 def load_user_profile(user_id: int) -> dict | None:
     rows = sheets.spreadsheets().values().get(
@@ -825,6 +827,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # уведомляем второго (с антиспамом)
         await notify_new_dialog(context.application, dialog_id, from_user)
 
+        context.user_data["current_dialog_id"] = dialog_id
         text2, kb = render_dialog(dialog_id, from_user)
         await show_screen(update, context, text2, kb)
         return
