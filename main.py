@@ -81,7 +81,8 @@ INTERESTS = [
 # =========================
 # META HELPERS
 # =========================
-
+PRESENCE_ACTIVE_SEC = 60  # считаем что юзер "сейчас в экране", если обновлялся в последние 60 сек
+STATE_IDLE = "IDLE"
 NOTIFY_COOLDOWN_SEC = 60
 ACTIVE_WINDOW_SEC = 20
 
@@ -159,6 +160,85 @@ def upsert_dialog_meta(meta: dict):
             body={"values": values},
         ).execute()
 
+def get_presence(user_id: int) -> dict:
+    rows = sheets.spreadsheets().values().get(
+        spreadsheetId=SPREADSHEET_ID,
+        range="presence!A2:E",
+    ).execute().get("values", [])
+
+    for r in rows:
+        if not r or not r[0]:
+            continue
+        try:
+            uid = int(r[0])
+        except Exception:
+            continue
+        if uid != user_id:
+            continue
+
+        r = r + [""] * (5 - len(r))
+        return {
+            "user_id": uid,
+            "state": r[1] or "",
+            "current_dialog_id": r[2] or "",
+            "main_message_id": r[3] or "",
+            "updated_at": r[4] or "",
+        }
+
+    return {
+        "user_id": user_id,
+        "state": "",
+        "current_dialog_id": "",
+        "main_message_id": "",
+        "updated_at": "",
+    }
+
+
+def upsert_presence(p: dict):
+    rows = sheets.spreadsheets().values().get(
+        spreadsheetId=SPREADSHEET_ID,
+        range="presence!A2:A",
+    ).execute().get("values", [])
+
+    target_row = None
+    for idx, r in enumerate(rows, start=2):
+        if r and r[0] and int(r[0]) == int(p["user_id"]):
+            target_row = idx
+            break
+
+    values = [[
+        str(p.get("user_id", "")),
+        p.get("state", ""),
+        p.get("current_dialog_id", ""),
+        str(p.get("main_message_id", "")) if p.get("main_message_id", "") != "" else "",
+        p.get("updated_at", ""),
+    ]]
+
+    if target_row:
+        sheets.spreadsheets().values().update(
+            spreadsheetId=SPREADSHEET_ID,
+            range=f"presence!A{target_row}:E{target_row}",
+            valueInputOption="RAW",
+            body={"values": values},
+        ).execute()
+    else:
+        sheets.spreadsheets().values().append(
+            spreadsheetId=SPREADSHEET_ID,
+            range="presence!A2",
+            valueInputOption="RAW",
+            body={"values": values},
+        ).execute()
+
+
+def set_presence(user_id: int, state: str, current_dialog_id: str = "", main_message_id: int | None = None):
+    p = get_presence(user_id)
+    p["state"] = state
+    p["current_dialog_id"] = current_dialog_id or ""
+    if main_message_id is not None:
+        p["main_message_id"] = str(main_message_id)
+    p["updated_at"] = utc_now_iso()
+    upsert_presence(p)
+
 # =========================
 # USER STATE (TEMP)
 # =========================
@@ -177,6 +257,12 @@ def get_main_message_id(context: ContextTypes.DEFAULT_TYPE):
 def set_main_message_id(context: ContextTypes.DEFAULT_TYPE, message_id: int):
     context.user_data["main_message_id"] = message_id
 
+set_presence(
+    user_id=update.effective_user.id,
+    state=get_state(context),
+    current_dialog_id=context.user_data.get("current_dialog_id", ""),
+    main_message_id=sent.message_id
+)
 
 # =========================
 # DATA ACCESS
@@ -391,6 +477,13 @@ async def show_recommendation(update, context, user: dict):
 
     context.user_data["main_message_id"] = sent.message_id
 
+    set_presence(
+        user_id=update.effective_user.id,
+        state=get_state(context),
+        current_dialog_id=context.user_data.get("current_dialog_id", ""),
+        main_message_id=sent.message_id
+)
+
 async def show_screen(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -536,6 +629,8 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         set_state(context, STATE_DIALOGS)
         text, kb = render_dialogs(uid)
         await show_screen(update, context, text, kb)
+        context.user_data["current_dialog_id"] = ""
+        set_presence(uid, STATE_IDLE, "", context.user_data.get("main_message_id"))
         return
 
     if data.startswith("dialog:"):
@@ -560,6 +655,13 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         text, kb = render_dialog(dialog_id, uid)
         await show_screen(update, context, text, kb)
+
+        set_presence(
+            user_id=uid,
+            state=STATE_DIALOG,
+            current_dialog_id=dialog_id,
+            main_message_id=context.user_data.get("main_message_id")
+        )
         return
 
     if data.startswith("gender:"):
@@ -658,6 +760,8 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not rec:
             text, kb = render_empty()
             await show_screen(update, context, text, kb)
+            context.user_data["current_dialog_id"] = ""
+            set_presence(uid, STATE_IDLE, "", context.user_data.get("main_message_id"))
             return
 
         set_state(context, STATE_RECOMMENDATION)
@@ -987,12 +1091,6 @@ def render_dialog(dialog_id: str, current_user: int):
 
     return text, kb
 
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("⬅️ Назад", callback_data="go:dialogs")]
-    ])
-
-    return text, kb
-
 async def notify_new_dialog(app, dialog_id: str, from_user: int):
     u1, u2 = get_dialog_users(dialog_id)
     if not u1 or not u2:
@@ -1003,7 +1101,6 @@ async def notify_new_dialog(app, dialog_id: str, from_user: int):
     meta = get_dialog_meta(dialog_id)
     now_dt = datetime.now(timezone.utc)
 
-    # определяем поля для target
     if target == u1:
         last_open = iso_to_dt(meta.get("u1_last_open_at"))
         last_notify = iso_to_dt(meta.get("u1_last_notify_at"))
@@ -1013,12 +1110,48 @@ async def notify_new_dialog(app, dialog_id: str, from_user: int):
         last_notify = iso_to_dt(meta.get("u2_last_notify_at"))
         notify_field = "u2_last_notify_at"
 
-    # 1) если target недавно открывал диалог, не уведомляем
     if last_open and (now_dt - last_open).total_seconds() <= ACTIVE_WINDOW_SEC:
         return
 
-    # 2) cooldown
     if last_notify and (now_dt - last_notify).total_seconds() <= NOTIFY_COOLDOWN_SEC:
+        return
+
+    presence = get_presence(target)
+    presence_state = presence.get("state", "")
+    presence_dialog = presence.get("current_dialog_id", "")
+    presence_updated = iso_to_dt(presence.get("updated_at"))
+
+    is_presence_fresh = (
+        presence_updated is not None and
+        (now_dt - presence_updated).total_seconds() <= PRESENCE_ACTIVE_SEC
+    )
+
+    if (
+        presence_state == STATE_DIALOG and
+        presence_dialog == dialog_id and
+        is_presence_fresh
+    ):
+        try:
+            text, kb = render_dialog(dialog_id, target)
+            old_mid = presence.get("main_message_id")
+
+            if old_mid:
+                try:
+                    await app.bot.delete_message(
+                        chat_id=target,
+                        message_id=int(old_mid)
+                    )
+                except Exception:
+                    pass
+
+            sent = await app.bot.send_message(
+                chat_id=target,
+                text=text,
+                reply_markup=kb
+            )
+            set_presence(target, STATE_DIALOG, dialog_id, sent.message_id)
+        except Exception:
+            pass
         return
 
     await app.bot.send_message(
@@ -1029,7 +1162,6 @@ async def notify_new_dialog(app, dialog_id: str, from_user: int):
         ])
     )
 
-    # записываем время уведомления
     meta[notify_field] = now_dt.isoformat()
     upsert_dialog_meta(meta)
 
