@@ -68,7 +68,7 @@ STATE_ONBOARDING_INTERESTS = "ONBOARDING_INTERESTS"
 STATE_ONBOARDING_LOOKING_AGE_MIN = "STATE_ONBOARDING_LOOKING_AGE_MIN"
 STATE_ONBOARDING_LOOKING_AGE_MAX = "STATE_ONBOARDING_LOOKING_AGE_MAX"
 STATE_RECOMMENDATION = "RECOMMENDATION"
-
+STATE_DIALOG = "DIALOG"
 STATE_DIALOGS = "DIALOGS"
 STATE_EMPTY = "EMPTY"
 
@@ -312,24 +312,17 @@ async def show_recommendation(update, context, user: dict):
     context.user_data["main_message_id"] = sent.message_id
 
 async def show_screen(
-        
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     text: str,
     keyboard: InlineKeyboardMarkup,
 ):
-    msg_id = get_main_message_id(context)
-    log.info("SEND NEW MAIN MESSAGE")
+    msg_id = context.user_data.pop("main_message_id", None)
     if msg_id:
         try:
-            await update.effective_chat.edit_message_text(
-                message_id=msg_id,
-                text=text,
-                reply_markup=keyboard,
-            )
-            return
+            await update.effective_chat.delete_message(msg_id)
         except Exception:
-            context.user_data.pop("main_message_id", None)
+            pass
 
     sent = await update.effective_chat.send_message(
         text=text,
@@ -449,15 +442,13 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("dialog:"):
         dialog_id = data.split(":")[1]
-
         if dialog_id == "empty":
             return
 
-        # Пока только экран-заглушка диалога
-        text = "Диалог"
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Назад", callback_data="go:dialogs")]
-        ])
+        context.user_data["current_dialog_id"] = dialog_id
+        set_state(context, STATE_DIALOG)
+
+        text, kb = render_dialog(dialog_id, uid)
         await show_screen(update, context, text, kb)
         return
 
@@ -534,6 +525,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("💬 Диалоги", callback_data="go:dialogs")]
             ])
         )
+        return
 
     if data == "onboarding:finish":
         set_state(context, STATE_ONBOARDING_LOOKING_GENDER)
@@ -577,23 +569,27 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         set_state(context, STATE_RECOMMENDATION)
-        text, kb = render_recommendation_card(rec)
-        await show_screen(update, context, text, kb)
+        await show_recommendation(update, context, rec)
         return
 
     if data.startswith("rec:start:"):
-        other_user_id = int(data.split(":")[2])
+        other_id = int(data.split(":")[2])
 
-        # пока заглушка - позже тут будет запись в dialogs sheet
-        text = f"Ок. Диалог с пользователем {other_user_id} создан (пока заглушка)."
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("К диалогам", callback_data="go:dialogs")],
-            [InlineKeyboardButton("Дальше рекомендации", callback_data="rec:skip")]
-        ])
+        dialog_id = create_dialog(uid, other_id)
+
+        context.user_data["current_dialog_id"] = dialog_id
+        set_state(context, STATE_DIALOG)
+
+        await notify_new_dialog(
+            context.application,
+            dialog_id,
+            uid
+        )
+
+        text, kb = render_dialog(dialog_id, uid)
         await show_screen(update, context, text, kb)
         return
     
-        
 # =========================
 # ONBOARDING
 # =========================
@@ -603,6 +599,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
 
     profile = context.user_data.get("profile", {})
+
+    if state == STATE_DIALOG:
+        dialog_id = context.user_data.get("current_dialog_id")
+        if not dialog_id:
+            return
+
+        save_dialog_message(dialog_id, update.effective_user.id, text)
+
+        text, kb = render_dialog(dialog_id, update.effective_user.id)
+        await show_screen(update, context, text, kb)
+        return
 
     if state == STATE_ONBOARDING_LOOKING_AGE_MIN:
         if not text.isdigit() or not (18 <= int(text) <= 99):
@@ -797,6 +804,82 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         profile["photos"] = photos
         context.user_data["profile"] = profile
         return
+
+# =========================
+# DIALOGS
+# =========================
+
+def create_dialog(user_1: int, user_2: int) -> str:
+    dialog_id = f"{user_1}_{user_2}_{int(datetime.now().timestamp())}"
+    now = datetime.now(timezone.utc).isoformat()
+
+    sheets.spreadsheets().values().append(
+        spreadsheetId=SPREADSHEET_ID,
+        range="dialogs!A2",
+        valueInputOption="RAW",
+        body={"values": [[dialog_id, user_1, user_2, now, "active"]]},
+    ).execute()
+
+    return dialog_id
+
+def get_dialog_users(dialog_id: str):
+    rows = sheets.spreadsheets().values().get(
+        spreadsheetId=SPREADSHEET_ID,
+        range="dialogs!A2:E",
+    ).execute().get("values", [])
+
+    for r in rows:
+        if not r or r[0] != dialog_id:
+            continue
+        return int(r[1]), int(r[2])
+
+    return None, None
+
+def save_dialog_message(dialog_id: str, from_user: int, text: str):
+    now = datetime.now(timezone.utc).isoformat()
+
+    sheets.spreadsheets().values().append(
+        spreadsheetId=SPREADSHEET_ID,
+        range="dialog_messages!A2",
+        valueInputOption="RAW",
+        body={"values": [[dialog_id, from_user, text, now]]},
+    ).execute()
+
+def render_dialog(dialog_id: str, current_user: int):
+    rows = sheets.spreadsheets().values().get(
+        spreadsheetId=SPREADSHEET_ID,
+        range="dialog_messages!A2:D",
+    ).execute().get("values", [])
+
+    msgs = [r for r in rows if r and r[0] == dialog_id][-10:]
+
+    lines = []
+    for _, from_user, text, _ in msgs:
+        prefix = "Ты:" if int(from_user) == current_user else "Он:"
+        lines.append(f"{prefix} {text}")
+
+    if not lines:
+        lines.append("Напиши первое сообщение 👇")
+
+    text = "Диалог\n\n" + "\n".join(lines)
+
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⬅️ Назад", callback_data="go:dialogs")]
+    ])
+
+    return text, kb
+
+async def notify_new_dialog(app, dialog_id: str, from_user: int):
+    u1, u2 = get_dialog_users(dialog_id)
+    target = u2 if u1 == from_user else u1
+
+    await app.bot.send_message(
+        chat_id=target,
+        text="У тебя новый диалог ✨",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("Открыть", callback_data=f"dialog:{dialog_id}")]
+        ])
+    )
 
 # =========================
 # MAIN
