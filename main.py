@@ -522,24 +522,37 @@ async def render_dialog_screen(
     bot = None
     chat_id = user_id
 
-    if update:
-        bot = update.effective_chat
-    else:
-        bot = application.bot  # см. ниже
-
+    # удаляем старый экран
     if old_mid:
         try:
-            await bot.delete_message(chat_id=chat_id, message_id=int(old_mid))
+            if update:
+                # Chat API
+                await update.effective_chat.delete_message(int(old_mid))
+            else:
+                # Bot API
+                await context.application.bot.delete_message(
+                    chat_id=user_id,
+                    message_id=int(old_mid),
+                )
         except Exception:
             pass
 
+    # рендерим диалог
     text, kb = render_dialog(dialog_id, user_id)
 
-    sent = await bot.send_message(
-        chat_id=chat_id,
-        text=text,
-        reply_markup=kb,
-    )
+    if update:
+        # Chat API
+        sent = await update.effective_chat.send_message(
+            text=text,
+            reply_markup=kb,
+        )
+    else:
+        # Bot API
+        sent = await context.application.bot.send_message(
+            chat_id=user_id,
+            text=text,
+            reply_markup=kb,
+        )
 
     set_presence(
         user_id=user_id,
@@ -869,13 +882,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         from_user = update.effective_user.id
 
-        # 1. сохраняем сообщение
         save_dialog_message(dialog_id, from_user, text)
+        await notify_new_dialog(
+            context.application,
+            context,
+            dialog_id,
+            from_user,
+        )
 
-        # 2. уведомляем второго (или обновляем экран, если он в диалоге)
-        await notify_new_dialog(context.application, dialog_id, from_user)
-
-        # 3. перерисовываем ТЕКУЩИЙ диалог текущему юзеру
         await render_dialog_screen(
             update=update,
             context=context,
@@ -1146,15 +1160,20 @@ def render_dialog(dialog_id: str, current_user: int):
 
     return text, kb
 
-async def notify_new_dialog(app, dialog_id: str, from_user: int):
+async def notify_new_dialog(
+    app,
+    context: ContextTypes.DEFAULT_TYPE,
+    dialog_id: str,
+    from_user: int,
+):
     u1, u2 = get_dialog_users(dialog_id)
     if not u1 or not u2:
         return
 
     target = u2 if u1 == from_user else u1
+    now_dt = datetime.now(timezone.utc)
 
     meta = get_dialog_meta(dialog_id)
-    now_dt = datetime.now(timezone.utc)
 
     if target == u1:
         last_open = iso_to_dt(meta.get("u1_last_open_at"))
@@ -1165,39 +1184,39 @@ async def notify_new_dialog(app, dialog_id: str, from_user: int):
         last_notify = iso_to_dt(meta.get("u2_last_notify_at"))
         notify_field = "u2_last_notify_at"
 
+    # === active window ===
     if last_open and (now_dt - last_open).total_seconds() <= ACTIVE_WINDOW_SEC:
         return
 
+    # === notify cooldown ===
     if last_notify and (now_dt - last_notify).total_seconds() <= NOTIFY_COOLDOWN_SEC:
         return
 
     presence = get_presence(target)
-    presence_state = presence.get("state", "")
-    presence_dialog = presence.get("current_dialog_id", "")
+    presence_state = presence.get("state")
+    presence_dialog = presence.get("current_dialog_id")
     presence_updated = iso_to_dt(presence.get("updated_at"))
 
     is_presence_fresh = (
-        presence_updated is not None and
-        (now_dt - presence_updated).total_seconds() <= PRESENCE_ACTIVE_SEC
+        presence_updated is not None
+        and (now_dt - presence_updated).total_seconds() <= PRESENCE_ACTIVE_SEC
     )
 
+    # === пользователь уже в этом диалоге → тихо обновляем экран ===
     if (
-        presence_state == STATE_DIALOG and
-        presence_dialog == dialog_id and
-        is_presence_fresh
+        presence_state == STATE_DIALOG
+        and presence_dialog == dialog_id
+        and is_presence_fresh
     ):
-        try:
-            # тихо обновляем экран через ЕДИНУЮ точку
-            await render_dialog_screen(
-                update=None,
-                context=None,
-                dialog_id=dialog_id,
-                user_id=target,
-            )
-        except Exception:
-            pass
+        await render_dialog_screen(
+            update=None,
+            context=context,
+            dialog_id=dialog_id,
+            user_id=target,
+        )
         return
 
+    # === обычное уведомление ===
     await app.bot.send_message(
         chat_id=target,
         text="У тебя новое сообщение ✨",
