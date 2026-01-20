@@ -511,30 +511,36 @@ async def show_screen(
     )
 
 async def render_dialog_screen(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
+    update: Update | None,
+    context: ContextTypes.DEFAULT_TYPE | None,
     dialog_id: str,
     user_id: int,
 ):
-    # 1. читаем presence как источник истины
     presence = get_presence(user_id)
     old_mid = presence.get("main_message_id")
 
+    bot = None
+    chat_id = user_id
+
+    if update:
+        bot = update.effective_chat
+    else:
+        bot = application.bot  # см. ниже
+
     if old_mid:
         try:
-            await update.effective_chat.delete_message(int(old_mid))
+            await bot.delete_message(chat_id=chat_id, message_id=int(old_mid))
         except Exception:
             pass
 
-    # 2. рендерим диалог
     text, kb = render_dialog(dialog_id, user_id)
 
-    sent = await update.effective_chat.send_message(
+    sent = await bot.send_message(
+        chat_id=chat_id,
         text=text,
         reply_markup=kb,
     )
 
-    # 3. обновляем presence (ЕДИНСТВЕННОЕ место)
     set_presence(
         user_id=user_id,
         state=STATE_DIALOG,
@@ -542,10 +548,10 @@ async def render_dialog_screen(
         main_message_id=sent.message_id,
     )
 
-    # 4. context больше не источник истины, но храним для совместимости
-    context.user_data["current_dialog_id"] = dialog_id
-    context.user_data["main_message_id"] = sent.message_id
-    set_state(context, STATE_DIALOG)
+    if context:
+        context.user_data["current_dialog_id"] = dialog_id
+        context.user_data["main_message_id"] = sent.message_id
+        set_state(context, STATE_DIALOG)
 
 
 def load_user_profile(user_id: int) -> dict | None:
@@ -1180,8 +1186,16 @@ async def notify_new_dialog(app, dialog_id: str, from_user: int):
         presence_dialog == dialog_id and
         is_presence_fresh
     ):
-        # пользователь и так в диалоге, уведомление не шлем
-        # экран обновится, когда он что-то сделает (или через callback/open)
+        try:
+            # тихо обновляем экран через ЕДИНУЮ точку
+            await render_dialog_screen(
+                update=None,
+                context=None,
+                dialog_id=dialog_id,
+                user_id=target,
+            )
+        except Exception:
+            pass
         return
 
     await app.bot.send_message(
