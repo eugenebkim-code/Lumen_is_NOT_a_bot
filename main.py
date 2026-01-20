@@ -672,10 +672,17 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "go:dialogs":
         set_state(context, STATE_DIALOGS)
+
         text, kb = render_dialogs(uid)
         await show_screen(update, context, text, kb)
-        context.user_data["current_dialog_id"] = ""
-        set_presence(uid, STATE_IDLE, "", context.user_data.get("main_message_id"))
+
+        # presence приводим в нейтральное состояние
+        set_presence(
+            user_id=uid,
+            state=STATE_IDLE,
+            current_dialog_id="",
+            main_message_id=context.user_data.get("main_message_id"),
+        )
         return
 
     if data.startswith("dialog:"):
@@ -683,7 +690,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if dialog_id == "empty":
             return
 
-        # фиксируем что юзер открыл диалог
+        # 1. фиксируем open_at (ТОЛЬКО meta)
         u1, u2 = get_dialog_users(dialog_id)
         meta = get_dialog_meta(dialog_id)
         now = utc_now_iso()
@@ -695,9 +702,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         upsert_dialog_meta(meta)
 
-        context.user_data["current_dialog_id"] = dialog_id
-        set_state(context, STATE_DIALOG)
-
+        # 2. единственный вход в экран диалога
         await render_dialog_screen(update, context, dialog_id, uid)
         return
 
