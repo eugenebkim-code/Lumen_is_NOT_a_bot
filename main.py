@@ -448,6 +448,24 @@ def load_user_profile(user_id: int) -> dict | None:
 
     return None
 
+def get_user_name(user_id: int) -> str:
+    rows = sheets.spreadsheets().values().get(
+        spreadsheetId=SPREADSHEET_ID,
+        range="users!A2:D",
+    ).execute().get("values", [])
+
+    for r in rows:
+        if not r:
+            continue
+        try:
+            if int(r[0]) == user_id:
+                return r[3] or "пользователем"
+        except Exception:
+            continue
+
+    return "пользователем"
+
+
 # =========================
 # HANDLERS
 # =========================
@@ -957,7 +975,34 @@ def render_dialog(dialog_id: str, current_user: int):
     if not lines:
         lines.append("Напиши первое сообщение 👇")
 
-    text = "Диалог\n\n" + "\n".join(lines)
+    def render_dialog(dialog_id: str, current_user: int):
+        u1, u2 = get_dialog_users(dialog_id)
+        other_id = u2 if u1 == current_user else u1
+
+        other_name = get_user_name(other_id)
+
+        rows = sheets.spreadsheets().values().get(
+            spreadsheetId=SPREADSHEET_ID,
+            range="dialog_messages!A2:D",
+        ).execute().get("values", [])
+
+        msgs = [r for r in rows if r and r[0] == dialog_id][-10:]
+
+        lines = []
+        for _, from_user, text, _ in msgs:
+            prefix = "Ты:" if int(from_user) == current_user else f"{other_name}:"
+            lines.append(f"{prefix} {text}")
+
+        if not lines:
+            lines.append("Напиши первое сообщение 👇")
+
+        text = f"Диалог с {other_name}\n\n" + "\n".join(lines)
+
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ Назад", callback_data="go:dialogs")]
+        ])
+
+        return text, kb
 
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("⬅️ Назад", callback_data="go:dialogs")]
