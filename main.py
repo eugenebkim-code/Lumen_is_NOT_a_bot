@@ -828,17 +828,17 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         dialog_id = create_dialog(uid, other_id)
 
-        context.user_data["current_dialog_id"] = dialog_id
-        set_state(context, STATE_DIALOG)
+        # фиксируем meta open_at (чтобы active-window работал корректно)
+        u1, u2 = get_dialog_users(dialog_id)
+        meta = get_dialog_meta(dialog_id)
+        now = utc_now_iso()
+        if uid == u1:
+            meta["u1_last_open_at"] = now
+        elif uid == u2:
+            meta["u2_last_open_at"] = now
+        upsert_dialog_meta(meta)
 
-        await notify_new_dialog(
-            context.application,
-            dialog_id,
-            uid
-        )
-
-        text, kb = render_dialog(dialog_id, uid)
-        await show_screen(update, context, text, kb)
+        await render_dialog_screen(update, context, dialog_id, uid)
         return
     
 # =========================
@@ -1175,27 +1175,8 @@ async def notify_new_dialog(app, dialog_id: str, from_user: int):
         presence_dialog == dialog_id and
         is_presence_fresh
     ):
-        try:
-            text, kb = render_dialog(dialog_id, target)
-            old_mid = presence.get("main_message_id")
-
-            if old_mid:
-                try:
-                    await app.bot.delete_message(
-                        chat_id=target,
-                        message_id=int(old_mid)
-                    )
-                except Exception:
-                    pass
-
-            sent = await app.bot.send_message(
-                chat_id=target,
-                text=text,
-                reply_markup=kb
-            )
-            set_presence(target, STATE_DIALOG, dialog_id, sent.message_id)
-        except Exception:
-            pass
+        # пользователь и так в диалоге, уведомление не шлем
+        # экран обновится, когда он что-то сделает (или через callback/open)
         return
 
     await app.bot.send_message(
