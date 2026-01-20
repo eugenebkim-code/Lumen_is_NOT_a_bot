@@ -274,6 +274,43 @@ def render_interests_keyboard(context: ContextTypes.DEFAULT_TYPE):
 # =========================
 # SCREEN ROUTER
 # =========================
+
+async def show_recommendation(update, context, user: dict):
+    # удаляем старое главное сообщение
+    msg_id = context.user_data.pop("main_message_id", None)
+    if msg_id:
+        try:
+            await update.effective_chat.delete_message(msg_id)
+        except Exception:
+            pass
+
+    text = (
+        f"{user['name']}, {user['age']}\n"
+        f"{user['city']}\n\n"
+        f"{user['about']}"
+    )
+
+    kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "💬 Начать диалог",
+                callback_data=f"rec:start:{user['user_id']}"
+            ),
+            InlineKeyboardButton(
+                "➡️ Пропустить",
+                callback_data="rec:skip"
+            ),
+        ]
+    ])
+
+    sent = await update.effective_chat.send_photo(
+        photo=user["photo_main"],
+        caption=text,
+        reply_markup=kb,
+    )
+
+    context.user_data["main_message_id"] = sent.message_id
+
 async def show_screen(
         
     update: Update,
@@ -381,8 +418,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     set_state(context, STATE_RECOMMENDATION)
-    text, kb = render_recommendation_card(rec)
-    await show_screen(update, context, text, kb)
+    await show_recommendation(update, context, rec)
 
 # =========================
 # CALLBACK
@@ -523,8 +559,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         set_state(context, STATE_RECOMMENDATION)
-        text, kb = render_recommendation_card(rec)
-        await show_screen(update, context, text, kb)
+        await show_recommendation(update, context, rec)
         return
     
     # =========================
