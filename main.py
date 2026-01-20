@@ -78,6 +78,86 @@ INTERESTS = [
     "Еда", "Искусство", "Саморазвитие", "Прогулки",
 ]
 
+# =========================
+# META HELPERS
+# =========================
+
+NOTIFY_COOLDOWN_SEC = 60
+ACTIVE_WINDOW_SEC = 20
+
+def utc_now_iso():
+    return datetime.now(timezone.utc).isoformat()
+
+def iso_to_dt(s: str | None):
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(s)
+    except Exception:
+        return None
+
+def get_dialog_meta(dialog_id: str) -> dict:
+    rows = sheets.spreadsheets().values().get(
+        spreadsheetId=SPREADSHEET_ID,
+        range="dialog_meta!A2:E",
+    ).execute().get("values", [])
+
+    for r in rows:
+        if not r or r[0] != dialog_id:
+            continue
+        # добиваем длину до 5
+        r = r + [""] * (5 - len(r))
+        return {
+            "dialog_id": r[0],
+            "u1_last_open_at": r[1],
+            "u2_last_open_at": r[2],
+            "u1_last_notify_at": r[3],
+            "u2_last_notify_at": r[4],
+        }
+
+    return {
+        "dialog_id": dialog_id,
+        "u1_last_open_at": "",
+        "u2_last_open_at": "",
+        "u1_last_notify_at": "",
+        "u2_last_notify_at": "",
+    }
+
+def upsert_dialog_meta(meta: dict):
+    # simple strategy: read all, find row index, update; if not found append
+    rows = sheets.spreadsheets().values().get(
+        spreadsheetId=SPREADSHEET_ID,
+        range="dialog_meta!A2:A",
+    ).execute().get("values", [])
+
+    target_row = None
+    for idx, r in enumerate(rows, start=2):
+        if r and r[0] == meta["dialog_id"]:
+            target_row = idx
+            break
+
+    values = [[
+        meta.get("dialog_id", ""),
+        meta.get("u1_last_open_at", ""),
+        meta.get("u2_last_open_at", ""),
+        meta.get("u1_last_notify_at", ""),
+        meta.get("u2_last_notify_at", ""),
+    ]]
+
+    if target_row:
+        sheets.spreadsheets().values().update(
+            spreadsheetId=SPREADSHEET_ID,
+            range=f"dialog_meta!A{target_row}:E{target_row}",
+            valueInputOption="RAW",
+            body={"values": values},
+        ).execute()
+    else:
+        sheets.spreadsheets().values().append(
+            spreadsheetId=SPREADSHEET_ID,
+            range="dialog_meta!A2",
+            valueInputOption="RAW",
+            body={"values": values},
+        ).execute()
 
 # =========================
 # USER STATE (TEMP)
@@ -445,6 +525,18 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if dialog_id == "empty":
             return
 
+        # фиксируем что юзер открыл диалог
+        u1, u2 = get_dialog_users(dialog_id)
+        meta = get_dialog_meta(dialog_id)
+        now = utc_now_iso()
+
+        if uid == u1:
+            meta["u1_last_open_at"] = now
+        elif uid == u2:
+            meta["u2_last_open_at"] = now
+
+        upsert_dialog_meta(meta)
+
         context.user_data["current_dialog_id"] = dialog_id
         set_state(context, STATE_DIALOG)
 
@@ -605,10 +697,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not dialog_id:
             return
 
-        save_dialog_message(dialog_id, update.effective_user.id, text)
+        from_user = update.effective_user.id
+        save_dialog_message(dialog_id, from_user, text)
 
-        text, kb = render_dialog(dialog_id, update.effective_user.id)
-        await show_screen(update, context, text, kb)
+        # уведомляем второго (с антиспамом)
+        await notify_new_dialog(context.application, dialog_id, from_user)
+
+        text2, kb = render_dialog(dialog_id, from_user)
+        await show_screen(update, context, text2, kb)
         return
 
     if state == STATE_ONBOARDING_LOOKING_AGE_MIN:
@@ -871,15 +967,43 @@ def render_dialog(dialog_id: str, current_user: int):
 
 async def notify_new_dialog(app, dialog_id: str, from_user: int):
     u1, u2 = get_dialog_users(dialog_id)
+    if not u1 or not u2:
+        return
+
     target = u2 if u1 == from_user else u1
+
+    meta = get_dialog_meta(dialog_id)
+    now_dt = datetime.now(timezone.utc)
+
+    # определяем поля для target
+    if target == u1:
+        last_open = iso_to_dt(meta.get("u1_last_open_at"))
+        last_notify = iso_to_dt(meta.get("u1_last_notify_at"))
+        notify_field = "u1_last_notify_at"
+    else:
+        last_open = iso_to_dt(meta.get("u2_last_open_at"))
+        last_notify = iso_to_dt(meta.get("u2_last_notify_at"))
+        notify_field = "u2_last_notify_at"
+
+    # 1) если target недавно открывал диалог, не уведомляем
+    if last_open and (now_dt - last_open).total_seconds() <= ACTIVE_WINDOW_SEC:
+        return
+
+    # 2) cooldown
+    if last_notify and (now_dt - last_notify).total_seconds() <= NOTIFY_COOLDOWN_SEC:
+        return
 
     await app.bot.send_message(
         chat_id=target,
-        text="У тебя новый диалог ✨",
+        text="У тебя новое сообщение ✨",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("Открыть", callback_data=f"dialog:{dialog_id}")]
         ])
     )
+
+    # записываем время уведомления
+    meta[notify_field] = now_dt.isoformat()
+    upsert_dialog_meta(meta)
 
 # =========================
 # MAIN
