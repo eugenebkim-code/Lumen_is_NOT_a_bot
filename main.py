@@ -516,31 +516,36 @@ async def render_dialog_screen(
     dialog_id: str,
     user_id: int,
 ):
-    # это единственный разрешенный способ рисовать диалог
-    text, kb = render_dialog(dialog_id, user_id)
+    # 1. читаем presence как источник истины
+    presence = get_presence(user_id)
+    old_mid = presence.get("main_message_id")
 
-    msg_id = context.user_data.get("main_message_id")
-    if msg_id:
+    if old_mid:
         try:
-            await update.effective_chat.delete_message(msg_id)
+            await update.effective_chat.delete_message(int(old_mid))
         except Exception:
             pass
+
+    # 2. рендерим диалог
+    text, kb = render_dialog(dialog_id, user_id)
 
     sent = await update.effective_chat.send_message(
         text=text,
         reply_markup=kb,
     )
 
-    context.user_data["main_message_id"] = sent.message_id
-    context.user_data["current_dialog_id"] = dialog_id
-    set_state(context, STATE_DIALOG)
-
+    # 3. обновляем presence (ЕДИНСТВЕННОЕ место)
     set_presence(
         user_id=user_id,
         state=STATE_DIALOG,
         current_dialog_id=dialog_id,
         main_message_id=sent.message_id,
     )
+
+    # 4. context больше не источник истины, но храним для совместимости
+    context.user_data["current_dialog_id"] = dialog_id
+    context.user_data["main_message_id"] = sent.message_id
+    set_state(context, STATE_DIALOG)
 
 
 def load_user_profile(user_id: int) -> dict | None:
