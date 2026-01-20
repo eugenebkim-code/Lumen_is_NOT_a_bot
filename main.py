@@ -484,7 +484,12 @@ async def show_screen(
     text: str,
     keyboard: InlineKeyboardMarkup,
 ):
+    if get_state(context) == STATE_DIALOG:
+        log.warning("show_screen called inside STATE_DIALOG - forbidden")
+        return  # ⬅️ КРИТИЧНО: сразу выходим
+
     msg_id = context.user_data.pop("main_message_id", None)
+
     if msg_id:
         try:
             await update.effective_chat.delete_message(msg_id)
@@ -495,15 +500,48 @@ async def show_screen(
         text=text,
         reply_markup=keyboard,
     )
+
     set_main_message_id(context, sent.message_id)
 
-    # presence: фиксируем, где юзер сейчас
     set_presence(
         user_id=update.effective_user.id,
         state=get_state(context),
         current_dialog_id=context.user_data.get("current_dialog_id", ""),
         main_message_id=sent.message_id,
     )
+
+async def render_dialog_screen(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    dialog_id: str,
+    user_id: int,
+):
+    # это единственный разрешенный способ рисовать диалог
+    text, kb = render_dialog(dialog_id, user_id)
+
+    msg_id = context.user_data.get("main_message_id")
+    if msg_id:
+        try:
+            await update.effective_chat.delete_message(msg_id)
+        except Exception:
+            pass
+
+    sent = await update.effective_chat.send_message(
+        text=text,
+        reply_markup=kb,
+    )
+
+    context.user_data["main_message_id"] = sent.message_id
+    context.user_data["current_dialog_id"] = dialog_id
+    set_state(context, STATE_DIALOG)
+
+    set_presence(
+        user_id=user_id,
+        state=STATE_DIALOG,
+        current_dialog_id=dialog_id,
+        main_message_id=sent.message_id,
+    )
+
 
 def load_user_profile(user_id: int) -> dict | None:
     rows = sheets.spreadsheets().values().get(
@@ -655,15 +693,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["current_dialog_id"] = dialog_id
         set_state(context, STATE_DIALOG)
 
-        text, kb = render_dialog(dialog_id, uid)
-        await show_screen(update, context, text, kb)
-
-        set_presence(
-            user_id=uid,
-            state=STATE_DIALOG,
-            current_dialog_id=dialog_id,
-            main_message_id=context.user_data.get("main_message_id")
-        )
+        await render_dialog_screen(update, context, dialog_id, uid)
         return
 
     if data.startswith("gender:"):
@@ -822,14 +852,20 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         from_user = update.effective_user.id
+
+        # 1. сохраняем сообщение
         save_dialog_message(dialog_id, from_user, text)
 
-        # уведомляем второго (с антиспамом)
+        # 2. уведомляем второго (или обновляем экран, если он в диалоге)
         await notify_new_dialog(context.application, dialog_id, from_user)
 
-        context.user_data["current_dialog_id"] = dialog_id
-        text2, kb = render_dialog(dialog_id, from_user)
-        await show_screen(update, context, text2, kb)
+        # 3. перерисовываем ТЕКУЩИЙ диалог текущему юзеру
+        await render_dialog_screen(
+            update=update,
+            context=context,
+            dialog_id=dialog_id,
+            user_id=from_user,
+        )
         return
 
     if state == STATE_ONBOARDING_LOOKING_AGE_MIN:
